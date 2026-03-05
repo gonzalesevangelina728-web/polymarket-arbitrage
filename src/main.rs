@@ -1,3 +1,4 @@
+mod clob_ws;
 mod config;
 mod database;
 mod gamma_api;
