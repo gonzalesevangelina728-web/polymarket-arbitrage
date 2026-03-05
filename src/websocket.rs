@@ -1,4 +1,5 @@
 use anyhow::Result;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
