@@ -51,6 +51,8 @@ async fn run_live(_db: Database) -> Result<()> {
 
     // 1. 启动市场刷新任务
     let markets_clone = Arc::clone(&markets);
+    let btc_price_clone = Arc::clone(&btc_price);
+    
     tokio::spawn(async move {
         let client = GammaClient::new();
         let mut ticker = interval(Duration::from_secs(10)); // 每10秒检查一次
