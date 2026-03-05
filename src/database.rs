@@ -166,7 +166,7 @@ impl Database {
                     profit, profit_pct
                 );
             }
-            println!("\n💰 Total expected PnL: ${:.2f}", total_pnl);
+            println!("\n💰 Total expected PnL: ${:.2}", total_pnl);
         }
         
         println!("{}", "=".repeat(60));
