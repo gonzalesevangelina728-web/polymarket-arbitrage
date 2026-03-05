@@ -169,10 +169,18 @@ fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
         }
     };
     
-    let prices: Vec<f64> = match serde_json::from_str(outcome_prices_str) {
+    let prices_str: Vec<String> = match serde_json::from_str(outcome_prices_str) {
         Ok(p) => p,
         Err(e) => {
             warn!("解析失败: outcomePrices JSON 解析错误: {}", e);
+            return None;
+        }
+    };
+    
+    let prices: Vec<f64> = match prices_str.iter().map(|s| s.parse::<f64>()).collect::<Result<Vec<_>, _>>() {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("解析失败: 价格字符串转数字错误: {}", e);
             return None;
         }
     };
