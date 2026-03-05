@@ -32,13 +32,10 @@ impl GammaClient {
 
     /// 获取当前活跃的 BTC 5分钟市场
     pub async fn get_current_btc_5min_market(&self) -> Result<Option<Btc5MinMarket>> {
-        // 使用已知的市场时间戳作为基准
-        let base_timestamp = 1772724600i64; // 2026-03-05 23:30:00 UTC
         let now = Utc::now().timestamp();
         
-        // 计算当前应该处于哪个 5分钟周期
-        let cycles_passed = (now - base_timestamp) / 300;
-        let current_timestamp = base_timestamp + cycles_passed * 300;
+        // 向下取整到最近的 5 分钟 (300 秒)
+        let current_timestamp = (now / 300) * 300;
         
         // 尝试获取当前市场
         for offset in [0, -300, 300] {
