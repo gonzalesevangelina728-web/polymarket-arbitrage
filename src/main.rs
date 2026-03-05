@@ -5,11 +5,13 @@ mod types;
 mod websocket;
 
 use anyhow::Result;
+use chrono::Utc;
 use database::Database;
+use std::sync::{Arc, Mutex};
 use strategy::StrategyEngine;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber;
-use websocket::{BinanceBtcClient, PolymarketWsClient};
+use websocket::{PolymarketClobClient, PolymarketRtdsClient};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,95 +21,89 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Polymarket BTC 5分钟套利策略 - 实盘监测模式");
-    info!("配置参数:");
-    info!("  - Up买入阈值: < ${}", config::UP_PRICE_THRESHOLD);
-    info!("  - Down补仓阈值: < ${}", config::DOWN_PRICE_THRESHOLD);
-    info!("  - 最大总成本: ${}", config::MAX_TOTAL_COST);
-    info!(
-        "  - BTC 1分钟跌幅触发: {}%",
-        config::BTC_1M_DROP_TRIGGER * 100.0
-    );
-    info!("  - BTC反弹触发: {}%", config::BTC_BOUNCE_TRIGGER * 100.0);
-    info!(
-        "  - 交易窗口: T-{}s 到 T-{}s",
-        config::ENTRY_WINDOW_START,
-        config::ENTRY_WINDOW_END
-    );
+    info!("使用 Polymarket 同源数据 (RTDS)");
 
     // 初始化数据库
     let db = Database::new(config::DB_PATH)?;
     info!("✅ 数据库初始化完成: {}", config::DB_PATH);
 
-    // 初始化策略引擎
-    let strategy = StrategyEngine::new();
-
     // 选择运行模式
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--live" {
         info!("启动实盘监测模式...");
-        run_live(strategy, db).await?;
+        run_live(db).await?;
     } else {
         info!("启动模拟测试模式（添加 --live 参数运行实盘）...");
-        run_simulation(strategy, db).await?;
+        run_simulation(db).await?;
     }
 
     Ok(())
 }
 
 /// 实盘监测模式
-async fn run_live(mut _strategy: StrategyEngine, _db: Database) -> Result<()> {
-    info!("连接数据源...");
+async fn run_live(db: Database) -> Result<()> {
+    // 共享状态
+    let btc_price = Arc::new(Mutex::new(0.0f64));
+    let btc_change_1m = Arc::new(Mutex::new(0.0f64));
+    let strategy = Arc::new(Mutex::new(StrategyEngine::new()));
 
-    // 连接 Polymarket WebSocket
-    let mut polymarket_client = PolymarketWsClient::new();
-    if let Err(e) = polymarket_client.connect().await {
-        error!("Polymarket 连接失败: {}", e);
-        return Ok(());
-    }
-
-    // 连接 Binance BTC 价格源
-    let binance_client = BinanceBtcClient::connect().await?;
-
-    // 创建任务通道
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<types::MarketState>(100);
-
-    // 启动 BTC 价格监听任务
+    // 1. 启动 RTDS 客户端 (BTC 价格)
+    let btc_price_clone = Arc::clone(&btc_price);
+    let btc_change_clone = Arc::clone(&btc_change_1m);
+    
     tokio::spawn(async move {
-        if let Err(e) = binance_client.run(|price| {
-            // 更新 BTC 价格
-            info!("BTC 价格更新: ${:.2}", price);
+        let mut rtds = PolymarketRtdsClient::new();
+        
+        if let Err(e) = rtds.connect().await {
+            error!("RTDS 连接失败: {}", e);
+            return;
+        }
+        
+        if let Err(e) = rtds.subscribe_btc_price().await {
+            error!("订阅 BTC 价格失败: {}", e);
+            return;
+        }
+        
+        info!("✅ BTC 价格源已连接");
+        
+        if let Err(e) = rtds.run(|price, source| {
+            let mut p = btc_price_clone.lock().unwrap();
+            *p = price;
+            
+            let change = rtds.get_btc_change_1m();
+            let mut c = btc_change_clone.lock().unwrap();
+            *c = change;
+            
+            info!("BTC: ${:.2} ({}), 1m: {:.2}%", price, source, change * 100.0);
         }).await {
-            error!("Binance 连接错误: {}", e);
+            error!("RTDS 运行错误: {}", e);
         }
     });
 
-    // 启动 Polymarket 监听任务
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        if let Err(e) = polymarket_client.run(|market_state| {
-            // 发送市场更新到主循环
-            let _ = tx_clone.try_send(market_state);
-        }).await {
-            error!("Polymarket 连接错误: {}", e);
+    // 2. 启动 CLOB 客户端 (订单簿)
+    // TODO: 需要获取当前活跃的 BTC 5分钟市场 asset_id
+    info!("⚠️ 订单簿监测待实现 - 需要 BTC 5分钟市场 asset_id");
+
+    // 主循环：打印状态
+    info!("按 Ctrl+C 停止监测");
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        
+        let price = *btc_price.lock().unwrap();
+        let change = *btc_change_1m.lock().unwrap();
+        
+        if price > 0.0 {
+            info!("心跳 | BTC: ${:.2}, 1m涨跌: {:.2}%", price, change * 100.0);
         }
-    });
-
-    info!("✅ 所有数据源已连接，开始监测...");
-    info!("按 Ctrl+C 停止");
-
-    // 主循环处理市场更新
-    while let Some(market_state) = rx.recv().await {
-        // TODO: 处理市场更新，执行策略
-        info!("收到市场更新: {:?}", market_state.market_id);
     }
-
-    Ok(())
 }
 
 /// 模拟测试模式
-async fn run_simulation(mut strategy: StrategyEngine, db: Database) -> Result<()> {
-    use chrono::{Duration, Utc};
+async fn run_simulation(db: Database) -> Result<()> {
+    use chrono::Duration;
     use types::MarketState;
+
+    let mut strategy = StrategyEngine::new();
 
     info!("\n=== 测试场景1: Up入场信号 ===");
     let state1 = MarketState {
@@ -147,25 +143,6 @@ async fn run_simulation(mut strategy: StrategyEngine, db: Database) -> Result<()
     for trade in &trades2 {
         info!("生成交易: {:?} @ ${:.3}", trade.side, trade.price);
         db.save_trade(trade)?;
-    }
-
-    info!("\n=== 测试场景3: 不满足条件 ===");
-    let state3 = MarketState {
-        market_id: "btc-updown-5m-test2".to_string(),
-        end_time: Utc::now() + Duration::seconds(200),
-        up_price: 0.45,
-        down_price: 0.55,
-        up_ask: 0.47,
-        down_ask: 0.53,
-        btc_price: 86000.0,
-        btc_change_1m: -0.01,
-        btc_change_5m: -0.02,
-        timestamp: Utc::now(),
-    };
-
-    let trades3 = strategy.process_market_update(&state3);
-    if trades3.is_empty() {
-        info!("无交易信号（符合预期）");
     }
 
     info!("\n=== 统计报告 ===");
