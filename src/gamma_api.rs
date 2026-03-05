@@ -90,35 +90,109 @@ impl GammaClient {
 
 /// 解析 BTC 市场数据
 fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
-    let question = value.get("question")?.as_str()?.to_lowercase();
-    let slug = value.get("slug")?.as_str()?.to_string();
+    // 检查必需字段
+    let question = match value.get("question").and_then(|v| v.as_str()) {
+        Some(q) => q.to_lowercase(),
+        None => {
+            warn!("解析失败: 缺少 question 字段");
+            return None;
+        }
+    };
+    
+    let slug = match value.get("slug").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            warn!("解析失败: 缺少 slug 字段");
+            return None;
+        }
+    };
     
     // 过滤 BTC 5分钟市场
     if !question.contains("bitcoin") && !slug.contains("btc-updown-5m") {
         return None;
     }
 
-    let market_id = value.get("id")?.as_str()?.to_string();
-    let condition_id = value.get("conditionId")?.as_str()?.to_string();
-    let end_date_str = value.get("endDate")?.as_str()?;
-    let end_time = DateTime::parse_from_rfc3339(end_date_str).ok()?.with_timezone(&Utc);
+    let market_id = match value.get("id").and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            warn!("解析失败: 缺少 id 字段");
+            return None;
+        }
+    };
+    
+    let condition_id = match value.get("conditionId").and_then(|v| v.as_str()) {
+        Some(cid) => cid.to_string(),
+        None => {
+            warn!("解析失败: 缺少 conditionId 字段");
+            return None;
+        }
+    };
+    
+    let end_date_str = match value.get("endDate").and_then(|v| v.as_str()) {
+        Some(eds) => eds,
+        None => {
+            warn!("解析失败: 缺少 endDate 字段");
+            return None;
+        }
+    };
+    
+    let end_time = match DateTime::parse_from_rfc3339(end_date_str) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(e) => {
+            warn!("解析失败: endDate 格式错误: {}", e);
+            return None;
+        }
+    };
 
     // 解析 outcomes 和 prices (都是 JSON 字符串)
-    let outcomes_str = value.get("outcomes")?.as_str()?;
-    let outcome_prices_str = value.get("outcomePrices")?.as_str()?;
+    let outcomes_str = match value.get("outcomes").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            warn!("解析失败: 缺少 outcomes 字段或不是字符串");
+            return None;
+        }
+    };
     
-    let outcomes: Vec<String> = serde_json::from_str(outcomes_str).ok()?;
-    let prices: Vec<f64> = serde_json::from_str(outcome_prices_str).ok()?;
+    let outcome_prices_str = match value.get("outcomePrices").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            warn!("解析失败: 缺少 outcomePrices 字段或不是字符串");
+            return None;
+        }
+    };
+    
+    let outcomes: Vec<String> = match serde_json::from_str(outcomes_str) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("解析失败: outcomes JSON 解析错误: {}", e);
+            return None;
+        }
+    };
+    
+    let prices: Vec<f64> = match serde_json::from_str(outcome_prices_str) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("解析失败: outcomePrices JSON 解析错误: {}", e);
+            return None;
+        }
+    };
     
     if outcomes.len() != 2 || prices.len() != 2 {
+        warn!("解析失败: outcomes 或 prices 长度不等于 2");
         return None;
     }
 
     // 确定 Up/Down
-    let up_idx = outcomes.iter().position(|o| {
-        o.to_lowercase().contains("up")
-    })?;
-    let down_idx = 1 - up_idx; // 另一个就是 Down
+    let up_idx = match outcomes.iter().position(|o| o.to_lowercase().contains("up")) {
+        Some(idx) => idx,
+        None => {
+            warn!("解析失败: 未找到 'Up' outcome");
+            return None;
+        }
+    };
+    let down_idx = 1 - up_idx;
+
+    info!("✅ 市场解析成功: {} | Up: {:.3} | Down: {:.3}", market_id, prices[up_idx], prices[down_idx]);
 
     Some(Btc5MinMarket {
         market_id,
