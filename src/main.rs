@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use strategy::StrategyEngine;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber;
 use types::MarketState;
 
