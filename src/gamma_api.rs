@@ -100,11 +100,12 @@ fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
     let end_date_str = value.get("endDate")?.as_str()?;
     let end_time = DateTime::parse_from_rfc3339(end_date_str).ok()?.with_timezone(&Utc);
 
-    // 解析 outcomes 和 prices
-    let outcomes = value.get("outcomes")?.as_array()?;
-    let outcome_prices = value.get("outcomePrices")?.as_str()?;
+    // 解析 outcomes 和 prices (都是 JSON 字符串)
+    let outcomes_str = value.get("outcomes")?.as_str()?;
+    let outcome_prices_str = value.get("outcomePrices")?.as_str()?;
     
-    let prices: Vec<f64> = serde_json::from_str(outcome_prices).ok()?;
+    let outcomes: Vec<String> = serde_json::from_str(outcomes_str).ok()?;
+    let prices: Vec<f64> = serde_json::from_str(outcome_prices_str).ok()?;
     
     if outcomes.len() != 2 || prices.len() != 2 {
         return None;
@@ -112,7 +113,7 @@ fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
 
     // 确定 Up/Down
     let up_idx = outcomes.iter().position(|o| {
-        o.as_str().map(|s| s.to_lowercase().contains("up")).unwrap_or(false)
+        o.to_lowercase().contains("up")
     })?;
     let down_idx = 1 - up_idx; // 另一个就是 Down
 
@@ -120,8 +121,8 @@ fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
         market_id,
         condition_id,
         end_time,
-        up_outcome: outcomes[up_idx].as_str()?.to_string(),
-        down_outcome: outcomes[down_idx].as_str()?.to_string(),
+        up_outcome: outcomes[up_idx].clone(),
+        down_outcome: outcomes[down_idx].clone(),
         up_price: prices[up_idx],
         down_price: prices[down_idx],
     })
