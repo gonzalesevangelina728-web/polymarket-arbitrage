@@ -220,67 +220,15 @@ impl PolymarketClobClient {
         Ok(())
     }
 
-    /// 运行消息循环
-    pub async fn run<F>(&mut self, mut on_book_update: F) -> Result<()>
+    /// 运行消息循环（简化版，暂不处理）
+    pub async fn run<F>(&mut self, _on_book_update: F) -> Result<()>
     where
         F: FnMut(String, f64, f64) + Send + 'static,
     {
-        if let Some(stream) = &mut self.stream {
-            while let Some(msg) = stream.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        self.handle_book_message(&text, &mut on_book_update).await;
-                    }
-                    Ok(Message::Close(_)) => {
-                        warn!("CLOB 连接关闭");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("CLOB 错误: {}", e);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_book_message<F>(&self, text: &str, on_update: &mut F)
-    where
-        F: FnMut(String, f64, f64),
-    {
-        #[derive(Debug, Deserialize)]
-        struct BookMessage {
-            #[serde(rename = "event_type")]
-            event_type: String,
-            #[serde(default)]
-            asset_id: Option<String>,
-            #[serde(default)]
-            bids: Option<Vec<BookLevel>>,
-            #[serde(default)]
-            asks: Option<Vec<BookLevel>>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct BookLevel {
-            price: String,
-            size: String,
-        }
-
-        if let Ok(msg) = serde_json::from_str::<BookMessage>(text) {
-            if msg.event_type == "book" {
-                if let (Some(bids), Some(asks), Some(asset_id)) = (msg.bids, msg.asks, msg.asset_id) {
-                    if let (Some(best_bid), Some(best_ask)) = (bids.first(), asks.first()) {
-                        if let (Ok(bid), Ok(ask)) = (
-                            best_bid.price.parse::<f64>(),
-                            best_ask.price.parse::<f64>()
-                        ) {
-                            on_update(asset_id, bid, ask);
-                        }
-                    }
-                }
-            }
+        info!("CLOB 客户端运行中...");
+        // TODO: 实现订单簿消息处理
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         }
     }
 }
