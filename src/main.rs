@@ -1,5 +1,6 @@
 mod config;
 mod database;
+mod gamma_api;
 mod strategy;
 mod types;
 mod websocket;
@@ -7,11 +8,14 @@ mod websocket;
 use anyhow::Result;
 use chrono::Utc;
 use database::Database;
+use gamma_api::GammaClient;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use strategy::StrategyEngine;
-use tracing::{error, info, Level};
+use tokio::time::{interval, Duration};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber;
-use websocket::{PolymarketClobClient, PolymarketRtdsClient};
+use types::MarketState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,7 +25,6 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Polymarket BTC 5分钟套利策略 - 实盘监测模式");
-    info!("使用 Polymarket 同源数据 (RTDS)");
 
     // 初始化数据库
     let db = Database::new(config::DB_PATH)?;
@@ -41,67 +44,57 @@ async fn main() -> Result<()> {
 }
 
 /// 实盘监测模式
-async fn run_live(db: Database) -> Result<()> {
+async fn run_live(_db: Database) -> Result<()> {
     // 共享状态
     let btc_price = Arc::new(Mutex::new(0.0f64));
-    let btc_change_1m = Arc::new(Mutex::new(0.0f64));
-    let strategy = Arc::new(Mutex::new(StrategyEngine::new()));
+    let markets = Arc::new(Mutex::new(HashMap::new()));
 
-    // 1. 启动 RTDS 客户端 (BTC 价格)
-    let btc_price_clone = Arc::clone(&btc_price);
-    let btc_change_clone = Arc::clone(&btc_change_1m);
-    
+    // 1. 启动市场刷新任务
+    let markets_clone = Arc::clone(&markets);
     tokio::spawn(async move {
-        let mut rtds = PolymarketRtdsClient::new();
-        
-        if let Err(e) = rtds.connect().await {
-            error!("RTDS 连接失败: {}", e);
-            return;
-        }
-        
-        if let Err(e) = rtds.subscribe_btc_price().await {
-            error!("订阅 BTC 价格失败: {}", e);
-            return;
-        }
-        
-        info!("✅ BTC 价格源已连接");
-        
-        if let Err(e) = rtds.run(|price, source| {
-            let mut p = btc_price_clone.lock().unwrap();
-            *p = price;
+        let client = GammaClient::new();
+        let mut ticker = interval(Duration::from_secs(30));
+
+        loop {
+            ticker.tick().await;
             
-            let change = rtds.get_btc_change_1m();
-            let mut c = btc_change_clone.lock().unwrap();
-            *c = change;
-            
-            info!("BTC: ${:.2} ({}), 1m: {:.2}%", price, source, change * 100.0);
-        }).await {
-            error!("RTDS 运行错误: {}", e);
+            match client.get_btc_5min_markets().await {
+                Ok(new_markets) => {
+                    let mut m = markets_clone.lock().unwrap();
+                    *m = new_markets
+                        .into_iter()
+                        .map(|market| (market.market_id.clone(), market))
+                        .collect();
+                    info!("刷新市场列表: {} 个活跃市场", m.len());
+                }
+                Err(e) => {
+                    warn!("获取市场列表失败: {}", e);
+                }
+            }
         }
     });
 
-    // 2. 启动 CLOB 客户端 (订单簿)
-    // TODO: 需要获取当前活跃的 BTC 5分钟市场 asset_id
-    info!("⚠️ 订单簿监测待实现 - 需要 BTC 5分钟市场 asset_id");
+    // 2. 主循环
+    info!("✅ 服务已启动，开始监测...");
+    info!("按 Ctrl+C 停止");
 
-    // 主循环：打印状态
-    info!("按 Ctrl+C 停止监测");
+    let mut ticker = interval(Duration::from_secs(5));
+    
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        
+        ticker.tick().await;
+
         let price = *btc_price.lock().unwrap();
-        let change = *btc_change_1m.lock().unwrap();
-        
-        if price > 0.0 {
-            info!("心跳 | BTC: ${:.2}, 1m涨跌: {:.2}%", price, change * 100.0);
-        }
+        let markets_snapshot = markets.lock().unwrap().clone();
+
+        info!("心跳 | BTC: ${:.2}, 活跃市场: {} 个", price, markets_snapshot.len());
+
+        // TODO: 连接 RTDS 获取实时价格，执行策略
     }
 }
 
 /// 模拟测试模式
 async fn run_simulation(db: Database) -> Result<()> {
     use chrono::Duration;
-    use types::MarketState;
 
     let mut strategy = StrategyEngine::new();
 
