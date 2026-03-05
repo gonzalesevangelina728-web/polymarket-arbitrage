@@ -1,10 +1,22 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 const GAMMA_API_BASE: &str = "https://gamma-api.polymarket.com";
+
+/// 生成当前 BTC 5分钟市场的时间戳
+pub fn get_current_btc_5m_timestamp() -> i64 {
+    let now = Utc::now().timestamp();
+    // 向下取整到最近的 5 分钟 (300 秒)
+    (now / 300) * 300
+}
+
+/// 生成 BTC 5分钟市场的 slug
+pub fn get_btc_5m_slug(timestamp: i64) -> String {
+    format!("btc-updown-5m-{}", timestamp)
+}
 
 /// Gamma API 客户端
 pub struct GammaClient {
@@ -18,44 +30,58 @@ impl GammaClient {
         }
     }
 
-    /// 获取 BTC 5分钟市场列表
-    pub async fn get_btc_5min_markets(&self) -> Result<Vec<Btc5MinMarket>> {
-        let url = format!("{}/markets", GAMMA_API_BASE);
+    /// 获取当前活跃的 BTC 5分钟市场
+    pub async fn get_current_btc_5min_market(&self) -> Result<Option<Btc5MinMarket>> {
+        // 使用已知的市场时间戳作为基准
+        let base_timestamp = 1772724600i64; // 2026-03-05 23:30:00 UTC
+        let now = Utc::now().timestamp();
         
-        debug!("请求 Gamma API: {}", url);
+        // 计算当前应该处于哪个 5分钟周期
+        let cycles_passed = (now - base_timestamp) / 300;
+        let current_timestamp = base_timestamp + cycles_passed * 300;
+        
+        // 尝试获取当前市场
+        for offset in [0, -300, 300] {
+            let timestamp = current_timestamp + offset;
+            let slug = get_btc_5m_slug(timestamp);
+            
+            info!("查找市场: {} (timestamp: {})", slug, timestamp);
+            
+            match self.get_market_by_slug(&slug).await {
+                Ok(market) => {
+                    if let Some(btc_market) = parse_btc_market(market) {
+                        info!(
+                            "✅ 找到市场: {} | 结束: {} | Up: {:.3} | Down: {:.3}",
+                            btc_market.market_id,
+                            btc_market.end_time.format("%H:%M:%S"),
+                            btc_market.up_price,
+                            btc_market.down_price
+                        );
+                        return Ok(Some(btc_market));
+                    }
+                }
+                Err(e) => {
+                    debug!("未找到市场 {}: {}", slug, e);
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    /// 通过 slug 获取市场
+    async fn get_market_by_slug(&self, slug: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/markets", GAMMA_API_BASE);
         
         let response = self.client
             .get(&url)
-            .query(&[
-                ("active", "true"),
-                ("archived", "false"),
-                ("closed", "false"),
-                ("limit", "100"),
-            ])
+            .query(&[("slug", slug)])
             .send()
             .await?;
 
         let markets: Vec<serde_json::Value> = response.json().await?;
         
-        // 过滤 BTC 5分钟市场
-        let btc_markets: Vec<Btc5MinMarket> = markets
-            .into_iter()
-            .filter_map(|m| parse_btc_market(m))
-            .collect();
-
-        info!("找到 {} 个 BTC 5分钟活跃市场", btc_markets.len());
-        
-        for market in &btc_markets {
-            info!(
-                "市场: {} | 结束: {} | Up: {:.3} | Down: {:.3}",
-                market.market_id,
-                market.end_time.format("%H:%M:%S"),
-                market.up_price,
-                market.down_price
-            );
-        }
-
-        Ok(btc_markets)
+        markets.into_iter().next().ok_or_else(|| anyhow::anyhow!("Market not found"))
     }
 }
 
