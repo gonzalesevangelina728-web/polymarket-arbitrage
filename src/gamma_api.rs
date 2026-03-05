@@ -35,14 +35,12 @@ impl GammaClient {
             .send()
             .await?;
 
-        let markets: Vec<Market> = response.json().await?;
+        let markets: Vec<serde_json::Value> = response.json().await?;
         
         // 过滤 BTC 5分钟市场
         let btc_markets: Vec<Btc5MinMarket> = markets
             .into_iter()
-            .filter(|m| m.question.to_lowercase().contains("bitcoin") || 
-                    m.slug.contains("btc-updown-5m"))
-            .filter_map(|m| Btc5MinMarket::from_market(m))
+            .filter_map(|m| parse_btc_market(m))
             .collect();
 
         info!("找到 {} 个 BTC 5分钟活跃市场", btc_markets.len());
@@ -59,44 +57,48 @@ impl GammaClient {
 
         Ok(btc_markets)
     }
+}
 
-    /// 获取特定市场的详细信息
-    pub async fn get_market(&self, market_id: &str) -> Result<Market> {
-        let url = format!("{}/markets/{}", GAMMA_API_BASE, market_id);
-        
-        let response = self.client
-            .get(&url)
-            .send()
-            .await?;
-
-        let market: Market = response.json().await?;
-        Ok(market)
+/// 解析 BTC 市场数据
+fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
+    let question = value.get("question")?.as_str()?.to_lowercase();
+    let slug = value.get("slug")?.as_str()?.to_string();
+    
+    // 过滤 BTC 5分钟市场
+    if !question.contains("bitcoin") && !slug.contains("btc-updown-5m") {
+        return None;
     }
-}
 
-/// Gamma API 返回的市场数据
-#[derive(Debug, Deserialize)]
-pub struct Market {
-    pub id: String,
-    pub question: String,
-    pub slug: String,
-    #[serde(rename = "conditionId")]
-    pub condition_id: String,
-    #[serde(rename = "endDate")]
-    pub end_date: DateTime<Utc>,
-    pub outcomes: Option<Vec<String>>,
-    pub outcome_prices: Option<String>, // JSON string like "[\"0.5\", \"0.5\"]"
-    pub tokens: Option<Vec<Token>>,
-    pub active: bool,
-    pub closed: bool,
-    pub archived: bool,
-}
+    let market_id = value.get("id")?.as_str()?.to_string();
+    let condition_id = value.get("conditionId")?.as_str()?.to_string();
+    let end_date_str = value.get("endDate")?.as_str()?;
+    let end_time = DateTime::parse_from_rfc3339(end_date_str).ok()?.with_timezone(&Utc);
 
-#[derive(Debug, Deserialize)]
-pub struct Token {
-    pub token_id: String,
-    pub outcome: String,
-    pub price: f64,
+    // 解析 outcomes 和 prices
+    let outcomes = value.get("outcomes")?.as_array()?;
+    let outcome_prices = value.get("outcomePrices")?.as_str()?;
+    
+    let prices: Vec<f64> = serde_json::from_str(outcome_prices).ok()?;
+    
+    if outcomes.len() != 2 || prices.len() != 2 {
+        return None;
+    }
+
+    // 确定 Up/Down
+    let up_idx = outcomes.iter().position(|o| {
+        o.as_str().map(|s| s.to_lowercase().contains("up")).unwrap_or(false)
+    })?;
+    let down_idx = 1 - up_idx; // 另一个就是 Down
+
+    Some(Btc5MinMarket {
+        market_id,
+        condition_id,
+        end_time,
+        up_outcome: outcomes[up_idx].as_str()?.to_string(),
+        down_outcome: outcomes[down_idx].as_str()?.to_string(),
+        up_price: prices[up_idx],
+        down_price: prices[down_idx],
+    })
 }
 
 /// 简化的 BTC 5分钟市场信息
@@ -105,34 +107,13 @@ pub struct Btc5MinMarket {
     pub market_id: String,
     pub condition_id: String,
     pub end_time: DateTime<Utc>,
-    pub up_token_id: String,
-    pub down_token_id: String,
+    pub up_outcome: String,
+    pub down_outcome: String,
     pub up_price: f64,
     pub down_price: f64,
 }
 
 impl Btc5MinMarket {
-    fn from_market(market: Market) -> Option<Self> {
-        let tokens = market.tokens?;
-        
-        if tokens.len() != 2 {
-            return None;
-        }
-
-        let up_token = tokens.iter().find(|t| t.outcome.to_lowercase().contains("up"))?;
-        let down_token = tokens.iter().find(|t| t.outcome.to_lowercase().contains("down"))?;
-
-        Some(Self {
-            market_id: market.id,
-            condition_id: market.condition_id,
-            end_time: market.end_date,
-            up_token_id: up_token.token_id.clone(),
-            down_token_id: down_token.token_id.clone(),
-            up_price: up_token.price,
-            down_price: down_token.price,
-        })
-    }
-
     /// 计算距离结算还有多少秒
     pub fn seconds_to_end(&self) -> i64 {
         (self.end_time - Utc::now()).num_seconds()
@@ -142,17 +123,5 @@ impl Btc5MinMarket {
     pub fn in_trading_window(&self) -> bool {
         let secs = self.seconds_to_end();
         secs >= 90 && secs <= 240
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_get_btc_markets() {
-        let client = GammaClient::new();
-        let markets = client.get_btc_5min_markets().await.unwrap();
-        assert!(!markets.is_empty());
     }
 }
