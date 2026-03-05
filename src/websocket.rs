@@ -1,9 +1,9 @@
 use anyhow::Result;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 /// Polymarket RTDS (Real-Time Data Socket) 客户端
@@ -39,7 +39,6 @@ impl PolymarketRtdsClient {
             }]
         });
 
-        use tokio_tungstenite::tungstenite::Message;
         stream.send(Message::Text(subscription.to_string())).await?;
         info!("已订阅 BTC 实时价格");
 
