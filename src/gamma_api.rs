@@ -49,15 +49,21 @@ impl GammaClient {
             
             match self.get_market_by_slug(&slug).await {
                 Ok(market) => {
-                    if let Some(btc_market) = parse_btc_market(market) {
-                        info!(
-                            "✅ 找到市场: {} | 结束: {} | Up: {:.3} | Down: {:.3}",
-                            btc_market.market_id,
-                            btc_market.end_time.format("%H:%M:%S"),
-                            btc_market.up_price,
-                            btc_market.down_price
-                        );
-                        return Ok(Some(btc_market));
+                    info!("API 返回市场数据，开始解析...");
+                    match parse_btc_market(market) {
+                        Some(btc_market) => {
+                            info!(
+                                "✅ 找到市场: {} | 结束: {} | Up: {:.3} | Down: {:.3}",
+                                btc_market.market_id,
+                                btc_market.end_time.format("%H:%M:%S"),
+                                btc_market.up_price,
+                                btc_market.down_price
+                            );
+                            return Ok(Some(btc_market));
+                        }
+                        None => {
+                            warn!("找到市场但解析失败: {}", slug);
+                        }
                     }
                 }
                 Err(e) => {
