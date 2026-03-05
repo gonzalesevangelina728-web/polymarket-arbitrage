@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const GAMMA_API_BASE: &str = "https://gamma-api.polymarket.com";
 
