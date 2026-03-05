@@ -200,29 +200,77 @@ fn parse_btc_market(value: serde_json::Value) -> Option<Btc5MinMarket> {
     };
     let down_idx = 1 - up_idx;
 
-    info!("✅ 市场解析成功: {} | Up: {:.3} | Down: {:.3}", market_id, prices[up_idx], prices[down_idx]);
+    // 获取 token IDs (用于 CLOB 订阅)
+    let clob_token_ids_str = match value.get("clobTokenIds").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            warn!("解析失败: 缺少 clobTokenIds 字段");
+            return None;
+        }
+    };
+    
+    let clob_token_ids: Vec<String> = match serde_json::from_str(clob_token_ids_str) {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!("解析失败: clobTokenIds JSON 解析错误: {}", e);
+            return None;
+        }
+    };
+    
+    if clob_token_ids.len() != 2 {
+        warn!("解析失败: clobTokenIds 长度不等于 2");
+        return None;
+    }
+    
+    let up_token_id = clob_token_ids[up_idx].clone();
+    let down_token_id = clob_token_ids[down_idx].clone();
+    
+    // 获取开始时间
+    let start_date_str = match value.get("startDate").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            warn!("解析失败: 缺少 startDate 字段");
+            return None;
+        }
+    };
+    
+    let start_time = match DateTime::parse_from_rfc3339(start_date_str) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(e) => {
+            warn!("解析失败: startDate 格式错误: {}", e);
+            return None;
+        }
+    };
+
+    info!("✅ 市场解析成功: {} | Up: {:.3} | Down: {:.3}", slug, prices[up_idx], prices[down_idx]);
 
     Some(Btc5MinMarket {
         market_id,
+        slug: slug.clone(),
         condition_id,
+        start_time,
         end_time,
-        up_outcome: outcomes[up_idx].clone(),
-        down_outcome: outcomes[down_idx].clone(),
+        up_token_id,
+        down_token_id,
         up_price: prices[up_idx],
         down_price: prices[down_idx],
+        btc_start_price: None, // TODO: 从描述或 Chainlink 获取
     })
 }
 
-/// 简化的 BTC 5分钟市场信息
+/// BTC 5分钟市场完整信息
 #[derive(Debug, Clone)]
 pub struct Btc5MinMarket {
     pub market_id: String,
+    pub slug: String,
     pub condition_id: String,
+    pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
-    pub up_outcome: String,
-    pub down_outcome: String,
+    pub up_token_id: String,
+    pub down_token_id: String,
     pub up_price: f64,
     pub down_price: f64,
+    pub btc_start_price: Option<f64>, // 起始 BTC 价格（从描述中解析或后续获取）
 }
 
 impl Btc5MinMarket {
@@ -235,5 +283,25 @@ impl Btc5MinMarket {
     pub fn in_trading_window(&self) -> bool {
         let secs = self.seconds_to_end();
         secs >= 90 && secs <= 240
+    }
+    
+    /// 格式化显示市场信息
+    pub fn display_info(&self, current_btc_price: f64) -> String {
+        let btc_change = if self.btc_start_price.is_some() {
+            let start = self.btc_start_price.unwrap();
+            (current_btc_price - start) / start * 100.0
+        } else {
+            0.0
+        };
+        
+        format!(
+            "📊 {} | 剩余{}s | BTC: ${:.2} ({:+.2}%) | Up: {:.3} | Down: {:.3}",
+            self.slug,
+            self.seconds_to_end(),
+            current_btc_price,
+            btc_change,
+            self.up_price,
+            self.down_price
+        )
     }
 }

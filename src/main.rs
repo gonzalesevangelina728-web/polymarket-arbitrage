@@ -61,8 +61,9 @@ async fn run_live(_db: Database) -> Result<()> {
             match client.get_current_btc_5min_market().await {
                 Ok(Some(market)) => {
                     let mut m = markets_clone.lock().unwrap();
+                    let btc_price = *btc_price_clone.lock().unwrap();
+                    info!("{}", market.display_info(btc_price));
                     m.insert(market.market_id.clone(), market);
-                    info!("更新市场: {} 个活跃市场", m.len());
                 }
                 Ok(None) => {
                     debug!("当前无活跃 BTC 5分钟市场");
