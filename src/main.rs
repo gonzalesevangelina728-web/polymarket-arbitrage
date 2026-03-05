@@ -53,22 +53,22 @@ async fn run_live(_db: Database) -> Result<()> {
     let markets_clone = Arc::clone(&markets);
     tokio::spawn(async move {
         let client = GammaClient::new();
-        let mut ticker = interval(Duration::from_secs(30));
+        let mut ticker = interval(Duration::from_secs(10)); // 每10秒检查一次
 
         loop {
             ticker.tick().await;
             
-            match client.get_btc_5min_markets().await {
-                Ok(new_markets) => {
+            match client.get_current_btc_5min_market().await {
+                Ok(Some(market)) => {
                     let mut m = markets_clone.lock().unwrap();
-                    *m = new_markets
-                        .into_iter()
-                        .map(|market| (market.market_id.clone(), market))
-                        .collect();
-                    info!("刷新市场列表: {} 个活跃市场", m.len());
+                    m.insert(market.market_id.clone(), market);
+                    info!("更新市场: {} 个活跃市场", m.len());
+                }
+                Ok(None) => {
+                    debug!("当前无活跃 BTC 5分钟市场");
                 }
                 Err(e) => {
-                    warn!("获取市场列表失败: {}", e);
+                    warn!("获取市场失败: {}", e);
                 }
             }
         }
